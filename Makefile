@@ -71,6 +71,9 @@ docker-push: ## Push docker image with the manager.
 
 ##@ Deployment
 
+crd: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
+	$(KUSTOMIZE) build config/crd
+
 install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
 	$(KUSTOMIZE) build config/crd | kubectl apply -f -
 
