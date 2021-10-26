@@ -1,0 +1,24 @@
+# permissions for end users to edit changerequests.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: changerequest-editor-role
+rules:
+- apiGroups:
+  - turbonomic.io
+  resources:
+  - changerequests
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - turbonomic.io
+  resources:
+  - changerequests/status
+  verbs:
+  - get

@@ -3,4 +3,13 @@ layout:
 - go.kubebuilder.io/v3
 projectName: change-reconciler
 repo: github.com/irfanurrehman/change-reconciler
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: turbonomic.io
+  kind: ChangeRequest
+  path: github.com/irfanurrehman/change-reconciler/api/v1alpha1
+  version: v1alpha1
 version: "3"

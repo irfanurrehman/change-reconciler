@@ -1,0 +1,7 @@
+apiVersion: turbonomic.io/v1alpha1
+kind: ChangeRequest
+metadata:
+  name: changerequest-sample
+spec:
+  # Add fields here
+  foo: bar

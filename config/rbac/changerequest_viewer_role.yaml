@@ -1,0 +1,20 @@
+# permissions for end users to view changerequests.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: changerequest-viewer-role
+rules:
+- apiGroups:
+  - turbonomic.io
+  resources:
+  - changerequests
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - turbonomic.io
+  resources:
+  - changerequests/status
+  verbs:
+  - get
