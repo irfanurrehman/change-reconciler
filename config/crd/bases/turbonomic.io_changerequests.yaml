@@ -36,20 +36,43 @@ spec:
           spec:
             description: ChangeRequestSpec defines the desired state of ChangeRequest
             properties:
-              pathname:
-                description: 'Pathname is the remote URL which is the source of truth.
-                  The CR controller will decipher the details from the path. eg. https://github.com/turbonomic/kubeturbo/blob/master/deploy/kubeturbo_yamls/step5_turbo_kubeturboDeploy.yaml
-                  TODO: Figure out if this is sufficient to pinpoint a given configuration
-                  If not, then a separate field specifying the repo specific configuration
-                  file path can be added.'
+              branch:
+                description: Branch optionally specifies the branch to which the file
+                  will be updated. If omitted the update will be pushed to the main
+                  branch.
                 type: string
-              payload:
-                description: Payload is the yaml structured resource data that needs
-                  to be updated at the path in the source of truth repo. The reconciler
-                  will expect that the git repo stores yamls and will diff the spec
-                  of the retrieved yaml with the source of truth path to determine
-                  if an update is needed.
+              filePath:
+                description: FilePath is the path of file to be updated in the repo.
+                  eg. deploy/kubeturbo_yamls/step5_turbo_kubeturboDeploy.yaml
                 type: string
+              mode:
+                description: 'A string representation of the ChangeRequesr type. Valid
+                  values include: `requestapproval`,`github`'
+                enum:
+                - requestapproval
+                - direct
+                type: string
+              patchItems:
+                description: PatchItems are a list of jsonpatch style patches that
+                  will be applied to the spec from the file at the source of truth,
+                  eg. a git repo. After the patch is applied the the file will be
+                  pushed back to the repo using the policy specified in "Mode".
+                items:
+                  properties:
+                    op:
+                      type: string
+                    path:
+                      type: string
+                    value:
+                      description: 'We needed an Interface{} typed here, but controller-gen
+                        doesn''t support that. We use a solution listed at https://github.com/kubernetes-sigs/controller-tools/pull/126#issuecomment-707233008.
+                        For more reference: https://github.com/kubernetes-sigs/controller-tools/pull/126#issuecomment-630764976
+                        https://github.com/kubernetes-sigs/controller-tools/issues/294#issuecomment-518379253'
+                      x-kubernetes-preserve-unknown-fields: true
+                  required:
+                  - path
+                  type: object
+                type: array
               secretRef:
                 description: For a `github` as the source of truth, this can be used
                   to reference a Secret which contains the credentials for authentication,
@@ -88,20 +111,30 @@ spec:
                     description: 'UID of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids'
                     type: string
                 type: object
+              source:
+                description: Source is the remote URL which is the source of truth.
+                  eg. https://github.com/turbonomic/kubeturbo
+                type: string
               type:
-                description: 'A string representation of the ChangeRequesr type. Valid
+                description: 'A string representation of the ChangeRequest type. Valid
                   values include: `GitHub`,`github`'
                 enum:
                 - GitHub
                 - github
                 type: string
             required:
-            - pathname
-            - payload
+            - filePath
+            - patchItems
+            - source
             - type
             type: object
           status:
             description: ChangeRequestStatus defines the observed state of ChangeRequest
+            properties:
+              state:
+                type: string
+            required:
+            - state
             type: object
         type: object
     served: true
