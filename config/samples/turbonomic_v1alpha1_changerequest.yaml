@@ -1,0 +1,18 @@
+apiVersion: turbonomic.io/v1alpha1
+kind: ChangeRequest
+metadata:
+  name: changerequest-sample
+spec:
+  type: GitHub
+  source: https://github.com/irfanurrehman/kubeturbo
+  filePath: deploy/kubeturbo_yamls/step5_turbo_kubeturboDeploy.yaml
+  branch: master
+  patchItems:
+  - op: replace
+    path: /spec/replicas
+    value: 2
+  - op: replace
+    path: /spec/replicas
+    value: 3
+  secretRef:
+    name: github-credentials
