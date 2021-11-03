@@ -16,3 +16,5 @@ Create by
 Alternatively use `Makefile`
 
 `make install` will generate a new CRD with updates (if any) and install it to the current kubectl context
+
+`make run` will run the controller locally (connects to the cluster from current context)
