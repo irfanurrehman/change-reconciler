@@ -46,8 +46,8 @@ spec:
                   eg. deploy/kubeturbo_yamls/step5_turbo_kubeturboDeploy.yaml
                 type: string
               mode:
-                description: 'A string representation of the ChangeRequesr type. Valid
-                  values include: `requestapproval`,`github`'
+                description: 'A string representation of the ChangeRequest push mode.
+                  Valid values include: `requestapproval`,`direct`'
                 enum:
                 - requestapproval
                 - direct

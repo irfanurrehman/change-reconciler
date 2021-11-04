@@ -35,8 +35,10 @@ import (
 
 	jsonpatch "github.com/evanphx/json-patch"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -78,8 +80,8 @@ func (r *ChangeRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	if cr.GetDeletionTimestamp() != nil || cr.Status.State == crv1alpha1.StateCompleted {
-		// Nothing to do as of now.
-		// We ignore reconciles of CRs whose status is completed.
+		// Nothing to do as of now if the resource if being deleted.
+		// We also ignore reconciles of CRs whose status is completed.
 		return reconcile.Result{}, nil
 	}
 
@@ -88,7 +90,8 @@ func (r *ChangeRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// so we go ahead with the PR creation (or push commit) of the update
 	// TODO: find a strategy in the PR naming or the hash of some kind
 	// which can be matched across reconciles to ensure multiple reconciles
-	// don't create multiple PRs for the same change.
+	// don't create multiple PRs for the same change. Also figure out if this
+	// is ever really needed.
 
 	if cr.Status.State == crv1alpha1.StateUpdating {
 		// We already must have a reconcile that is trying to create a PR
@@ -135,17 +138,28 @@ func (r *ChangeRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return r.updateStatus(cr, crv1alpha1.StateFailed)
 	}
 
+	token, err := r.getAuthTokenFromSecret(cr.Namespace, cr.Spec.SecretRef)
+	if err != nil {
+		if _, ok := err.(*errorFailReconcile); ok {
+			return r.updateStatus(cr, crv1alpha1.StateFailed)
+		}
+		// Other errors - requeue the request.
+		return reconcile.Result{
+			RequeueAfter: time.Second * 10,
+		}, err
+	}
+
 	handler := &GitHandler{
 		ctx:        context.Background(),
-		client:     getClient(ctx),
+		client:     getClient(ctx, token),
 		user:       pathParts[1],
 		repo:       pathParts[2],
 		baseBranch: cr.Spec.Branch,
 		filePath:   cr.Spec.FilePath,
 	}
 
-	newBranch := handler.baseBranch + strconv.FormatInt(time.Now().UnixNano(), 32)
-	_, err = handler.createPR(newBranch, cr.Spec.PatchItems)
+	newBranch := handler.baseBranch + "-" + strconv.FormatInt(time.Now().UnixNano(), 32)
+	_, err = handler.createPR(req.NamespacedName, newBranch, cr.Spec.PatchItems)
 	if err != nil {
 		glog.Errorf("Error creating new PR: %s/%s: %v", source, handler.filePath, err)
 		return r.updateStatus(cr, crv1alpha1.StateFailed)
@@ -153,6 +167,13 @@ func (r *ChangeRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	glog.Errorf("New PR created updating %s/%s from new branch %s.", source, handler.filePath, newBranch)
 	return r.updateStatus(cr, crv1alpha1.StateCompleted)
+}
+
+// SetupWithManager sets up the controller with the Manager.
+func (r *ChangeRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&crv1alpha1.ChangeRequest{}).
+		Complete(r)
 }
 
 func (r *ChangeRequestReconciler) updateStatus(cr *crv1alpha1.ChangeRequest, state crv1alpha1.ChangeRequestState) (ctrl.Result, error) {
@@ -168,18 +189,43 @@ func (r *ChangeRequestReconciler) updateStatus(cr *crv1alpha1.ChangeRequest, sta
 	return reconcile.Result{}, nil
 }
 
-// SetupWithManager sets up the controller with the Manager.
-func (r *ChangeRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&crv1alpha1.ChangeRequest{}).
-		Complete(r)
+type errorFailReconcile struct {
 }
 
-func getClient(ctx context.Context) *github.Client {
-	// TODO: get the Auth info from the secret
+func (t *errorFailReconcile) Error() string {
+	return "Error should fail reconcile."
+}
+
+func (r *ChangeRequestReconciler) getAuthTokenFromSecret(crNamespace string, secretRef *corev1.ObjectReference) (string, error) {
+	secret := &corev1.Secret{}
+	name := secretRef.Name
+	namespace := secretRef.Namespace
+	if namespace == "" {
+		namespace = crNamespace
+	}
+	secretNameSpacedName := types.NamespacedName{
+		Name:      name,
+		Namespace: namespace,
+	}
+	err := r.Get(context.TODO(), secretNameSpacedName, secret)
+	if errors.IsNotFound(err) {
+		glog.Errorf("Specified secret: %s/%s does not exist.", namespace, name)
+		return "", &errorFailReconcile{}
+	}
+	if err != nil {
+		return "", err
+	}
+	token, exists := secret.Data["token"]
+	if !exists {
+		glog.Errorf("Wrong data in secret: %s/%s. Key with name 'token' not found.", namespace, name)
+		return "", &errorFailReconcile{}
+	}
+	return string(token), nil
+}
+
+func getClient(ctx context.Context, token string) *github.Client {
 	ts := oauth2.StaticTokenSource(
-		// This is a dummy revoked token
-		&oauth2.Token{AccessToken: "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"},
+		&oauth2.Token{AccessToken: token},
 	)
 	tc := oauth2.NewClient(ctx, ts)
 	return github.NewClient(tc)
@@ -244,7 +290,7 @@ func (g *GitHandler) pushCommit(ref *github.Reference, tree *github.Tree) error 
 	date := time.Now()
 	authorName := "irfanurrehman"
 	authorEmail := "irfan.rehman@turbonomic.com"
-	commitMsg := "Action executed from turbo" // TODO: add more details
+	commitMsg := "ChangeReconciler: auto update yaml file " + g.filePath
 	author := &github.CommitAuthor{Date: &date, Name: &authorName, Email: &authorEmail}
 	commit := &github.Commit{Author: author, Message: &commitMsg, Tree: tree, Parents: []*github.Commit{parent.Commit}}
 	newCommit, _, err := g.client.Git.CreateCommit(g.ctx, g.user, g.repo, commit)
@@ -257,9 +303,12 @@ func (g *GitHandler) pushCommit(ref *github.Reference, tree *github.Tree) error 
 	return err
 }
 
-func (g *GitHandler) newPR(newBranch string) (*github.PullRequest, error) {
-	prTitle := "Update based on TODO"
-	prDescription := "Empty for now TODO"
+func (g *GitHandler) newPR(namespacedName types.NamespacedName, newBranch string) (*github.PullRequest, error) {
+	prTitle := fmt.Sprintf("ChangeReconciler: `%s` auto update yaml from branch `%s`", namespacedName, newBranch)
+	prDescription := "This PR is automatically created by `change-reconciler`. \n\n" +
+		fmt.Sprintf("This PR is created as a result of ChangeRequest resource %s. \n\n", namespacedName) +
+		"This PR creation must is trigerred when a ChangeReqeuest resource is created" +
+		"in the cluster where change-reconciler is running."
 	baseBranch := g.baseBranch
 
 	newPR := &github.NewPullRequest{
@@ -277,7 +326,8 @@ func (g *GitHandler) newPR(newBranch string) (*github.PullRequest, error) {
 	return pr, nil
 }
 
-func (g *GitHandler) createPR(newBranch string, patches []crv1alpha1.PatchItem) (*github.PullRequest, error) {
+func (g *GitHandler) createPR(namespacedName types.NamespacedName, newBranch string,
+	patches []crv1alpha1.PatchItem) (*github.PullRequest, error) {
 	yamlContent, err := g.getRemoteFileContent()
 	if err != nil {
 		// TODO: At some point we would need to have a retry strategy for
@@ -310,7 +360,7 @@ func (g *GitHandler) createPR(newBranch string, patches []crv1alpha1.PatchItem) 
 		return nil, fmt.Errorf("error committing new content to branch %s, %v", newBranch, err)
 	}
 
-	return g.newPR(newBranch)
+	return g.newPR(namespacedName, newBranch)
 }
 
 // TODO: Enhance the support to identify json or yaml content on the fly

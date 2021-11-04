@@ -71,8 +71,8 @@ type ChangeRequestSpec struct {
 	// +kubebuilder:validation:Enum={GitHub,github}
 	Type ChangeRequestType `json:"type"`
 
-	// A string representation of the ChangeRequesr type. Valid values include:
-	// `requestapproval`,`github`
+	// A string representation of the ChangeRequest push mode. Valid values include:
+	// `requestapproval`,`direct`
 	// +kubebuilder:validation:Enum={requestapproval,direct}
 	// +optional
 	Mode ChangeRequestPushMode `json:"mode"`
