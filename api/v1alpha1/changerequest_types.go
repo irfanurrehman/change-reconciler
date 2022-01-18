@@ -81,14 +81,31 @@ type ChangeRequestSpec struct {
 	// eg. https://github.com/turbonomic/kubeturbo
 	Source string `json:"source"`
 
-	// FilePath is the path of file to be updated in the repo.
+	// Path is either the complete path of file to be updated in the repo
+	// or the directory under which the file to be updated resides.
+	// If the path is the directory, then the name and namespace in the
+	// metadata section of the yaml is necessary to identify the exact yaml file
+	// within the directory.
 	// eg. deploy/kubeturbo_yamls/step5_turbo_kubeturboDeploy.yaml
-	FilePath string `json:"filePath"`
+	Path string `json:"path"`
 
 	// Branch optionally specifies the branch to which the file will be updated.
 	// If omitted the update will be pushed to the main branch.
 	// +optional
 	Branch string `json:"branch"`
+
+	// ResourceName optionally specifies the name in the metadata section of
+	// the yaml file when the path is a directory.
+	// If omitted the update will be pushed to the main branch.
+	// +optional
+	ResourceName string `json:"resourceName"`
+
+	// TODO: validation of this need to be introduced at some point
+	// ResourceNamespace optionally specifies the namespace in the metadata
+	// section of the yaml file when the path is a directory.
+	// If omitted the update will be pushed to the main branch.
+	// +optional
+	ResourceNamespace string `json:"resourceNamespace"`
 
 	// PatchItems are a list of jsonpatch style patches that will be applied
 	// to the spec from the file at the source of truth, eg. a git repo.

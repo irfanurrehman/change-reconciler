@@ -52,11 +52,20 @@ func main() {
 	var metricsAddr string
 	var enableLeaderElection bool
 	var probeAddr string
+	var gitSecretNamespace string
+	var gitSecretName string
+	var gitUsername string
+	var gitEmail string
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
+	flag.StringVar(&gitSecretNamespace, "git-secret-namespace", "", "The namespace of the secret which holds the git credentials.")
+	flag.StringVar(&gitSecretName, "git-secret-name", "", "The name of the secret which holds the git credentials.")
+	flag.StringVar(&gitUsername, "git-username", "", "The user name to be used to push changes to git.")
+	flag.StringVar(&gitEmail, "git-email", "", "The email to be used to push changes to git.")
+
 	opts := zap.Options{
 		Development: true,
 	}
@@ -79,8 +88,12 @@ func main() {
 	}
 
 	if err = (&controllers.ChangeRequestReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:             mgr.GetClient(),
+		Scheme:             mgr.GetScheme(),
+		GitSecretNamespace: gitSecretNamespace,
+		GitSecretName:      gitSecretName,
+		GitUsername:        gitUsername,
+		GitEmail:           gitEmail,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ChangeRequest")
 		os.Exit(1)

@@ -37,8 +37,10 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	k8sapiyaml "k8s.io/apimachinery/pkg/util/yaml"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -50,7 +52,11 @@ import (
 // ChangeRequestReconciler reconciles a ChangeRequest object
 type ChangeRequestReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme             *runtime.Scheme
+	GitSecretNamespace string
+	GitSecretName      string
+	GitUsername        string
+	GitEmail           string
 }
 
 //+kubebuilder:rbac:groups=turbonomic.io,resources=changerequests,verbs=get;list;watch;create;update;patch;delete
@@ -149,23 +155,32 @@ func (r *ChangeRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}, err
 	}
 
+	baseBranch := cr.Spec.Branch
+	// TODO: Figure out how to resolve HEAD while getting the refs from remote repo
+	if baseBranch == "HEAD" {
+		baseBranch = "master"
+	}
 	handler := &GitHandler{
 		ctx:        context.Background(),
 		client:     getClient(ctx, token),
 		user:       pathParts[1],
-		repo:       pathParts[2],
-		baseBranch: cr.Spec.Branch,
-		filePath:   cr.Spec.FilePath,
+		repo:       strings.TrimSuffix(pathParts[2], ".git"),
+		baseBranch: baseBranch,
+		path:       cr.Spec.Path,
 	}
 
+	resName := cr.Spec.ResourceName
+	if resName == "" {
+		resName = cr.Name
+	}
 	newBranch := handler.baseBranch + "-" + strconv.FormatInt(time.Now().UnixNano(), 32)
-	_, err = handler.createPR(req.NamespacedName, newBranch, cr.Spec.PatchItems)
+	_, err = handler.createPR(req.NamespacedName, newBranch, resName, cr.Spec.PatchItems)
 	if err != nil {
-		glog.Errorf("Error creating new PR: %s/%s: %v", source, handler.filePath, err)
+		glog.Errorf("Error creating new PR: %s/%s: %v", source, handler.path, err)
 		return r.updateStatus(cr, crv1alpha1.StateFailed)
 	}
 
-	glog.Errorf("New PR created updating %s/%s from new branch %s.", source, handler.filePath, newBranch)
+	glog.Errorf("New PR created updating %s/%s from new branch %s.", source, handler.path, newBranch)
 	return r.updateStatus(cr, crv1alpha1.StateCompleted)
 }
 
@@ -198,11 +213,17 @@ func (t *errorFailReconcile) Error() string {
 
 func (r *ChangeRequestReconciler) getAuthTokenFromSecret(crNamespace string, secretRef *corev1.ObjectReference) (string, error) {
 	secret := &corev1.Secret{}
-	name := secretRef.Name
-	namespace := secretRef.Namespace
-	if namespace == "" {
-		namespace = crNamespace
+	name := r.GitSecretName
+	namespace := r.GitSecretNamespace
+
+	if secretRef != nil {
+		name = secretRef.Name
+		namespace = secretRef.Namespace
+		if namespace == "" {
+			namespace = crNamespace
+		}
 	}
+
 	secretNameSpacedName := types.NamespacedName{
 		Name:      name,
 		Namespace: namespace,
@@ -220,7 +241,7 @@ func (r *ChangeRequestReconciler) getAuthTokenFromSecret(crNamespace string, sec
 		glog.Errorf("Wrong data in secret: %s/%s. Key with name 'token' not found.", namespace, name)
 		return "", &errorFailReconcile{}
 	}
-	return string(token), nil
+	return strings.TrimSpace(string(token)), nil
 }
 
 func getClient(ctx context.Context, token string) *github.Client {
@@ -237,7 +258,7 @@ type GitHandler struct {
 	user       string
 	repo       string
 	baseBranch string
-	filePath   string
+	path       string
 }
 
 func (g *GitHandler) createNewBranch(newBranch string) (ref *github.Reference, err error) {
@@ -250,22 +271,80 @@ func (g *GitHandler) createNewBranch(newBranch string) (ref *github.Reference, e
 	return ref, err
 }
 
-func (g *GitHandler) getRemoteFileContent() (string, error) {
+func (g *GitHandler) getRemoteFileContent(resName, path string) (string, error) {
 	opts := github.RepositoryContentGetOptions{
 		Ref: g.baseBranch,
 	}
-	fileContent, _, _, err := g.client.Repositories.GetContents(g.ctx, g.user, g.repo, g.filePath, &opts)
+	fileContent, dirContent, _, err := g.client.Repositories.GetContents(g.ctx, g.user, g.repo, path, &opts)
 	if err != nil {
 		return "", err
 	}
-	return fileContent.GetContent()
+	if fileContent != nil {
+		// This means we actually got the path as full file path
+		// The GetContents() api exclusively returns fileContent or dirContent.
+		return fileContent.GetContent()
+	}
+
+	if dirContent != nil {
+		fileData, path, err := g.fileContentFromDirContent(resName, dirContent)
+		if err != nil {
+			return "", err
+		}
+		g.path = path
+		return fileData, err
+	}
+
+	return "", fmt.Errorf("file with metadata.name %s not found in remote repo %s,", resName, g.repo)
+}
+
+func decodeAndMatchName(fileData, name string) (bool, error) {
+	obj := &unstructured.Unstructured{}
+	decoder := k8sapiyaml.NewYAMLToJSONDecoder(strings.NewReader(fileData))
+	if err := decoder.Decode(obj); err != nil {
+		return false, nil
+	}
+
+	if obj.GetName() == name {
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func (g *GitHandler) fileContentFromDirContent(resName string, dirContent []*github.RepositoryContent) (string, string, error) {
+	opts := github.RepositoryContentGetOptions{
+		Ref: g.baseBranch,
+	}
+	for _, repoContent := range dirContent {
+		fileContent, dirContent, _, err := g.client.Repositories.GetContents(g.ctx, g.user, g.repo, *repoContent.Path, &opts)
+		if err != nil {
+			return "", "", err
+		}
+		if fileContent != nil {
+			fileData, err := fileContent.GetContent()
+			if err != nil {
+				return "", "", err
+			}
+			match, err := decodeAndMatchName(fileData, resName)
+			if err != nil {
+				return "", "", err
+			}
+			if match {
+				return fileData, *repoContent.Path, nil
+			}
+		} else if dirContent != nil {
+			return g.fileContentFromDirContent(resName, dirContent)
+		}
+	}
+
+	return "", "", fmt.Errorf("file with metadata.name %s not found in remote repo %s,", resName, g.repo)
 }
 
 func (g *GitHandler) getTree(ref *github.Reference, fileContent []byte) (tree *github.Tree, err error) {
 	// Create a tree with what to commit.
 	entries := []*github.TreeEntry{
 		{
-			Path:    github.String(g.filePath),
+			Path:    github.String(g.path),
 			Type:    github.String("blob"),
 			Content: github.String(string(fileContent)),
 			Mode:    github.String("100644"),
@@ -290,7 +369,7 @@ func (g *GitHandler) pushCommit(ref *github.Reference, tree *github.Tree) error 
 	date := time.Now()
 	authorName := "irfanurrehman"
 	authorEmail := "irfan.rehman@turbonomic.com"
-	commitMsg := "ChangeReconciler: auto update yaml file " + g.filePath
+	commitMsg := "ChangeReconciler: auto update yaml file " + g.path
 	author := &github.CommitAuthor{Date: &date, Name: &authorName, Email: &authorEmail}
 	commit := &github.Commit{Author: author, Message: &commitMsg, Tree: tree, Parents: []*github.Commit{parent.Commit}}
 	newCommit, _, err := g.client.Git.CreateCommit(g.ctx, g.user, g.repo, commit)
@@ -326,20 +405,20 @@ func (g *GitHandler) newPR(namespacedName types.NamespacedName, newBranch string
 	return pr, nil
 }
 
-func (g *GitHandler) createPR(namespacedName types.NamespacedName, newBranch string,
+func (g *GitHandler) createPR(namespacedName types.NamespacedName, newBranch, resName string,
 	patches []crv1alpha1.PatchItem) (*github.PullRequest, error) {
-	yamlContent, err := g.getRemoteFileContent()
+	yamlContent, err := g.getRemoteFileContent(resName, g.path)
 	if err != nil {
 		// TODO: At some point we would need to have a retry strategy for
 		// transient errors.
-		glog.Errorf("error retrieving remote file %s", g.filePath)
-		return nil, fmt.Errorf("error retrieving remote file %s", g.filePath)
+		glog.Errorf("error retrieving remote file %s", g.path)
+		return nil, fmt.Errorf("error retrieving remote file %s", g.path)
 	}
 
 	patchedYamlContent, err := ApplyPatch([]byte(yamlContent), patches)
 	if err != nil {
-		glog.Errorf("error applying patches to file %s: %v", g.filePath, patches)
-		return nil, fmt.Errorf("error applying patches to file %s: %v", g.filePath, patches)
+		glog.Errorf("error applying patches to file %s: %v", g.path, patches)
+		return nil, fmt.Errorf("error applying patches to file %s: %v", g.path, patches)
 	}
 
 	ref, err := g.createNewBranch(newBranch)
