@@ -41,10 +41,6 @@ spec:
                   will be updated. If omitted the update will be pushed to the main
                   branch.
                 type: string
-              filePath:
-                description: FilePath is the path of file to be updated in the repo.
-                  eg. deploy/kubeturbo_yamls/step5_turbo_kubeturboDeploy.yaml
-                type: string
               mode:
                 description: 'A string representation of the ChangeRequest push mode.
                   Valid values include: `requestapproval`,`direct`'
@@ -73,6 +69,24 @@ spec:
                   - path
                   type: object
                 type: array
+              path:
+                description: Path is either the complete path of file to be updated
+                  in the repo or the directory under which the file to be updated
+                  resides. If the path is the directory, then the name and namespace
+                  in the metadata section of the yaml is necessary to identify the
+                  exact yaml file within the directory. eg. deploy/kubeturbo_yamls/step5_turbo_kubeturboDeploy.yaml
+                type: string
+              resourceName:
+                description: ResourceName optionally specifies the name in the metadata
+                  section of the yaml file when the path is a directory. If omitted
+                  the update will be pushed to the main branch.
+                type: string
+              resourceNamespace:
+                description: 'TODO: validation of this need to be introduced at some
+                  point ResourceNamespace optionally specifies the namespace in the
+                  metadata section of the yaml file when the path is a directory.
+                  If omitted the update will be pushed to the main branch.'
+                type: string
               secretRef:
                 description: For a `github` as the source of truth, this can be used
                   to reference a Secret which contains the credentials for authentication,
@@ -123,8 +137,8 @@ spec:
                 - github
                 type: string
             required:
-            - filePath
             - patchItems
+            - path
             - source
             - type
             type: object

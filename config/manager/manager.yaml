@@ -29,7 +29,11 @@ spec:
         - /manager
         args:
         - --leader-elect
-        image: controller:latest
+        - --git-username=irfanurrehman
+        - --git-email=irfan.rehman@turbonomic.com
+        - --git-secret-namespace=default
+        - --git-secret-name=github-credentials
+        image: irfdocker/change-reconciler:latest
         name: manager
         securityContext:
           allowPrivilegeEscalation: false
